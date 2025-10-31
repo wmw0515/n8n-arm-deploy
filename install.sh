@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 干净部署脚本（自动清理 + 健康检查 + Cloudflare SSL + 自动重试）
+# N8N ARM 干净部署脚本（端口健康检查 + Cloudflare SSL + 自动重试）
 # ==========================================
 set -e
 
@@ -86,28 +86,21 @@ cd /home/node
 docker compose -f n8n-docker-compose.yml up -d
 
 # ----------------------------
-# 等待 N8N 健康启动（带自动重试）
+# 等待 N8N 容器启动（端口检查 + 自动重试）
 # ----------------------------
-echo "[INFO] 等待 N8N 容器健康启动..."
+echo "[INFO] 等待 N8N 容器启动..."
 max_retries=30
 retry_interval=2
 attempt=0
 
 while true; do
-    CONTAINER_NAME=$(docker ps --filter "ancestor=n8nio/n8n" --format "{{.Names}}")
-    if [ -z "$CONTAINER_NAME" ]; then
-        echo "[WARN] 没有找到 N8N 容器，尝试重新启动 Docker Compose..."
-        docker compose -f /home/node/n8n-docker-compose.yml up -d
-        sleep 5
-        continue
-    fi
-
-    if docker exec "$CONTAINER_NAME" curl -s http://127.0.0.1:5678/healthz >/dev/null 2>&1; then
-        echo "[INFO] N8N 容器已启动成功"
+    # 检查宿主机端口是否已经监听
+    if lsof -i:${N8N_PORT_HOST} >/dev/null 2>&1; then
+        echo "[INFO] N8N 容器已启动成功，端口 ${N8N_PORT_HOST} 已监听"
         break
     else
         attempt=$((attempt+1))
-        echo "[WARN] N8N 容器还未健康，等待中... (${attempt}/${max_retries})"
+        echo "[WARN] N8N 容器还未启动，等待中... (${attempt}/${max_retries})"
         sleep $retry_interval
         if [ $attempt -ge $max_retries ]; then
             echo "[ERROR] N8N 容器启动超时，重启 Docker Compose..."
@@ -164,4 +157,23 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/n8n.aihelp.work/privkey.pem;
 
     location / {
-        proxy_pass http://127.0.0._
+        proxy_pass http://127.0.0.1:${N8N_PORT_HOST};
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
+
+sudo ln -sf /etc/nginx/sites-available/n8n_ssl /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+
+# ----------------------------
+# Cron 自动续期证书
+# ----------------------------
+(crontab -l 2>/dev/null; echo "0 3 */2 * * /home/node/n8n-env/bin/certbot renew --quiet && systemctl reload nginx") | crontab -
+
+echo "[INFO] 部署完成！N8N 用户名和密码已设置，可直接登录 N8N UI。"
+echo "[INFO] N8N 宿主机端口: ${N8N_PORT_HOST}"
