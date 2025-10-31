@@ -1,93 +1,99 @@
 #!/bin/bash
 
 # =========================================
-# n8n Docker 自动升级脚本
+# n8n Docker 强制升级脚本
 # =========================================
 
-N8N_IMAGE="n8nio/n8n:latest"  # 可改成固定版本，例如 n8nio/n8n:1.130.0
-BACKUP_DIR="$HOME/n8n_backups" # 备份存放目录
+# 可修改参数
+N8N_IMAGE="n8nio/n8n:latest"  # 可改为指定版本，如 n8nio/n8n:1.130.0
 ENABLE_CHINESE=true            # 是否启用中文界面
+BACKUP_DIR="$HOME/n8n_backups" # 备份目录
+
+echo "🚀 开始 n8n 强制升级..."
 
 # -----------------------------------------
 # 1. 自动查找 docker-compose.yml
 # -----------------------------------------
 echo "🔍 搜索 n8n docker-compose.yml ..."
 N8N_DIR=$(find / -name docker-compose.yml 2>/dev/null | grep n8n | head -n 1)
-
 if [ -z "$N8N_DIR" ]; then
-  echo "❌ 未找到 n8n 的 docker-compose.yml，请确认路径或容器名称。"
+  echo "❌ 未找到 n8n docker-compose.yml，请确认路径。"
   exit 1
 fi
-
 N8N_DIR=$(dirname "$N8N_DIR")
-echo "✅ 找到 docker-compose.yml: $N8N_DIR"
 cd "$N8N_DIR" || exit
+echo "✅ 找到 docker-compose.yml: $N8N_DIR"
 
 # -----------------------------------------
-# 2. 自动获取容器名
+# 2. 检查当前运行版本
 # -----------------------------------------
-N8N_CONTAINER_NAME=$(docker ps --format '{{.Names}}' | grep n8n | head -n 1)
-
-if [ -z "$N8N_CONTAINER_NAME" ]; then
-  echo "⚠️ 未发现运行中的 n8n 容器，将在启动后检查版本。"
+CURRENT_CONTAINER=$(docker ps --format '{{.Names}}' | grep n8n | head -n 1)
+if [ -n "$CURRENT_CONTAINER" ]; then
+  CURRENT_VERSION=$(docker exec -it "$CURRENT_CONTAINER" n8n --version)
+  echo "🔹 当前容器: $CURRENT_CONTAINER"
+  echo "🔹 当前版本: $CURRENT_VERSION"
 else
-  echo "✅ 检测到 n8n 容器: $N8N_CONTAINER_NAME"
+  echo "⚠️ 未检测到运行中的 n8n 容器"
+  CURRENT_VERSION="未运行"
 fi
 
 # -----------------------------------------
-# 3. 创建备份
+# 3. 备份数据
 # -----------------------------------------
 echo "📦 备份 n8n 数据..."
 mkdir -p "$BACKUP_DIR"
 BACKUP_FILE="$BACKUP_DIR/n8n_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
 tar czvf "$BACKUP_FILE" ~/.n8n
-echo "✅ 备份完成: $BACKUP_FILE"
+echo "✅ 数据备份完成: $BACKUP_FILE"
 
 # -----------------------------------------
-# 4. 停止容器
+# 4. 停止并删除旧容器
 # -----------------------------------------
-echo "🛑 停止 n8n 容器..."
+echo "🛑 停止并删除旧容器..."
 docker compose down
 
 # -----------------------------------------
-# 5. 拉取最新镜像
+# 5. 拉取最新镜像（或指定版本）
 # -----------------------------------------
 echo "⬇️ 拉取镜像: $N8N_IMAGE"
 docker pull "$N8N_IMAGE"
 
 # -----------------------------------------
-# 6. 设置中文界面（可选）
+# 6. 修改 docker-compose.yml 指向新镜像
+# -----------------------------------------
+sed -i "s|image:.*|image: $N8N_IMAGE|" docker-compose.yml
+echo "✅ docker-compose.yml 已更新为新镜像"
+
+# -----------------------------------------
+# 7. 设置中文界面（可选）
 # -----------------------------------------
 if [ "$ENABLE_CHINESE" = true ]; then
-  echo "🌐 设置中文界面..."
   if ! grep -q "N8N_DEFAULT_LOCALE" docker-compose.yml; then
     sed -i '/environment:/a \      - N8N_DEFAULT_LOCALE=zh-CN' docker-compose.yml
   else
     sed -i 's/.*N8N_DEFAULT_LOCALE=.*/      - N8N_DEFAULT_LOCALE=zh-CN/' docker-compose.yml
   fi
+  echo "🌐 中文界面已启用"
 fi
 
 # -----------------------------------------
-# 7. 启动容器
+# 8. 启动新容器
 # -----------------------------------------
-echo "🔄 启动 n8n 容器..."
+echo "🔄 启动新容器..."
 docker compose up -d
 
 # -----------------------------------------
-# 8. 检查版本
+# 9. 检查升级后版本
 # -----------------------------------------
 sleep 5
-if [ -n "$N8N_CONTAINER_NAME" ]; then
-  docker exec -it "$N8N_CONTAINER_NAME" n8n --version
+NEW_CONTAINER=$(docker ps --format '{{.Names}}' | grep n8n | head -n 1)
+if [ -n "$NEW_CONTAINER" ]; then
+  NEW_VERSION=$(docker exec -it "$NEW_CONTAINER" n8n --version)
+  echo "✅ 新容器: $NEW_CONTAINER"
+  echo "✅ 升级前版本: $CURRENT_VERSION"
+  echo "✅ 升级后版本: $NEW_VERSION"
 else
-  # 尝试自动获取容器名再检查
-  NEW_CONTAINER=$(docker ps --format '{{.Names}}' | grep n8n | head -n 1)
-  if [ -n "$NEW_CONTAINER" ]; then
-    echo "✅ 新容器版本:"
-    docker exec -it "$NEW_CONTAINER" n8n --version
-  else
-    echo "❌ 无法检测 n8n 容器版本，请手动检查。"
-  fi
+  echo "❌ 升级后未检测到 n8n 容器，请手动检查。"
 fi
 
-echo "🎉 n8n 升级完成！"
+echo "🎉 n8n 强制升级完成！"
