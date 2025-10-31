@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（智能 Cloudflare 证书）
+# N8N ARM 完整部署脚本（智能 Cloudflare 证书 + Python 虚拟环境 + systemd 开机自启）
 # ==========================================
 set -e
 
@@ -17,7 +17,7 @@ echo
 # ----------------------------
 sudo apt-get update -y
 sudo apt-get upgrade -y
-sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip
+sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip
 
 # ----------------------------
 # 安装 Docker 必要组件
@@ -35,6 +35,18 @@ sudo systemctl start docker
 # ----------------------------
 sudo mkdir -p /home/node/.n8n
 sudo chown -R 1000:1000 /home/node/.n8n
+
+# ----------------------------
+# Python 虚拟环境安装 Certbot
+# ----------------------------
+ENV_DIR="$HOME/n8n-env"
+if [ ! -d "$ENV_DIR" ]; then
+    python3 -m venv "$ENV_DIR"
+    echo "虚拟环境已创建: $ENV_DIR"
+fi
+source "$ENV_DIR/bin/activate"
+pip install --upgrade pip
+pip install --upgrade certbot certbot-dns-cloudflare
 
 # ----------------------------
 # Docker Compose 配置
@@ -86,14 +98,9 @@ sudo nginx -t
 sudo systemctl restart nginx
 
 # ----------------------------
-# 安装 Certbot 最新版
+# Cloudflare API Token 配置
 # ----------------------------
-sudo pip3 install --upgrade certbot certbot-dns-cloudflare
 mkdir -p /home/node/.secrets/certbot
-
-# ----------------------------
-# 判断 API Token 是否可用
-# ----------------------------
 API_TOKEN_SUPPORTED=false
 python3 - <<EOF
 try:
@@ -115,23 +122,23 @@ fi
 if [ "$API_TOKEN_SUPPORTED" = true ]; then
     echo "使用 API Token 配置 Cloudflare 证书"
     cat > /home/node/.secrets/certbot/cloudflare.ini <<EOF
-dns_cloudflare_api_token = ${CF_API_TOKEN}
+dns_cloudflare_api_token=${CF_API_TOKEN}
 EOF
 else
     echo "当前系统或插件版本不支持 API Token"
     read -p "请输入你的 Cloudflare 账户邮箱: " CF_EMAIL
     read -p "请输入你的 Cloudflare Global API Key: " CF_GLOBAL_KEY
     cat > /home/node/.secrets/certbot/cloudflare.ini <<EOF
-dns_cloudflare_email = ${CF_EMAIL}
-dns_cloudflare_api_key = ${CF_GLOBAL_KEY}
+dns_cloudflare_email=${CF_EMAIL}
+dns_cloudflare_api_key=${CF_GLOBAL_KEY}
 EOF
 fi
-
 chmod 600 /home/node/.secrets/certbot/cloudflare.ini
 
 # ----------------------------
-# 申请证书
+# 申请证书（虚拟环境内执行）
 # ----------------------------
+source "$ENV_DIR/bin/activate"
 certbot certonly \
   --dns-cloudflare \
   --dns-cloudflare-credentials /home/node/.secrets/certbot/cloudflare.ini \
@@ -173,6 +180,35 @@ sudo systemctl restart nginx
 # ----------------------------
 # Cron 每2天检查证书
 # ----------------------------
-(crontab -l 2>/dev/null; echo "0 3 */2 * * certbot renew --quiet && systemctl reload nginx") | crontab -
+(crontab -l 2>/dev/null; echo "0 3 */2 * * source $ENV_DIR/bin/activate && certbot renew --quiet && systemctl reload nginx") | crontab -
 
-echo "部署完成！N8N 用户名和密码已设置，可直接登录 N8N UI。"
+# ----------------------------
+# 创建 systemd 服务，实现开机自启
+# ----------------------------
+SERVICE_FILE="/etc/systemd/system/n8n.service"
+sudo tee $SERVICE_FILE > /dev/null <<EOF
+[Unit]
+Description=N8N Workflow Automation
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=/home/node
+ExecStart=/bin/bash -c 'source $ENV_DIR/bin/activate && docker compose -f /home/node/n8n-docker-compose.yml up'
+ExecStop=/bin/bash -c 'docker compose -f /home/node/n8n-docker-compose.yml down'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable n8n.service
+sudo systemctl start n8n.service
+
+echo "部署完成！虚拟环境路径: $ENV_DIR"
+echo "N8N 用户名和密码已设置，可直接登录 N8N UI。"
+echo "N8N 已配置为 systemd 服务开机自启：sudo systemctl status n8n.service 查看状态"
