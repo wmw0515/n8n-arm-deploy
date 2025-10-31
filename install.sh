@@ -1,11 +1,11 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（无人值守 + 可见进度）
+# N8N ARM 完整部署脚本（无人值守）
 # ==========================================
 set -e
 
 # ----------------------------
-# 必须设置环境变量
+# 环境变量检查
 # ----------------------------
 : "${N8N_USER:?请先设置环境变量 N8N_USER}"
 : "${N8N_PASSWORD:?请先设置环境变量 N8N_PASSWORD}"
@@ -21,20 +21,20 @@ SECRETS_DIR="$N8N_DIR/.secrets/certbot"
 ENV_DIR="$HOME/n8n-env"
 
 mkdir -p "$N8N_DIR/.n8n" "$SECRETS_DIR"
-echo "创建数据卷和证书目录: $N8N_DIR/.n8n , $SECRETS_DIR"
+echo "[INFO] 创建数据卷和证书目录"
 
 # ----------------------------
 # 系统更新与依赖
 # ----------------------------
-echo "更新系统和安装依赖..."
+echo "[INFO] 更新系统和安装依赖..."
 sudo apt-get update -y
 sudo apt-get upgrade -y
-sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip nginx >/dev/null 2>&1
+sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip nginx
 
 # ----------------------------
 # 安装 Docker
 # ----------------------------
-echo "安装 Docker..."
+echo "[INFO] 安装 Docker..."
 sudo mkdir -p /etc/apt/keyrings
 sudo rm -f /etc/apt/keyrings/docker.gpg
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -43,22 +43,22 @@ sudo apt-get update -y
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 sudo systemctl enable docker
 sudo systemctl start docker
-echo "Docker 安装完成"
+echo "[INFO] Docker 安装完成"
 
 # ----------------------------
 # Python 虚拟环境安装 Certbot
 # ----------------------------
-echo "创建 Python 虚拟环境并安装 Certbot..."
+echo "[INFO] 创建 Python 虚拟环境并安装 Certbot..."
 python3 -m venv "$ENV_DIR"
 source "$ENV_DIR/bin/activate"
-pip install --upgrade pip >/dev/null 2>&1
-pip install --upgrade certbot certbot-dns-cloudflare >/dev/null 2>&1
-echo "Certbot 安装完成"
+pip install --upgrade pip
+pip install --upgrade certbot certbot-dns-cloudflare
+echo "[INFO] Certbot 安装完成"
 
 # ----------------------------
 # Docker Compose 配置
 # ----------------------------
-echo "生成 Docker Compose 配置..."
+echo "[INFO] 生成 Docker Compose 配置..."
 cat > "$N8N_DIR/n8n-docker-compose.yml" <<EOF
 services:
   n8n:
@@ -82,15 +82,15 @@ EOF
 # ----------------------------
 # 启动 N8N Docker
 # ----------------------------
-echo "启动 N8N Docker 服务..."
+echo "[INFO] 启动 N8N Docker 服务..."
 cd "$N8N_DIR"
 docker compose -f n8n-docker-compose.yml up -d
-echo "N8N Docker 服务已启动"
+echo "[INFO] N8N Docker 服务已启动"
 
 # ----------------------------
 # Nginx 反代配置
 # ----------------------------
-echo "配置 Nginx 反代..."
+echo "[INFO] 配置 Nginx 反代..."
 cat > /etc/nginx/sites-available/n8n <<EOF
 server {
     listen 80;
@@ -108,12 +108,12 @@ EOF
 sudo ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl restart nginx
-echo "Nginx 配置完成"
+echo "[INFO] Nginx 配置完成"
 
 # ----------------------------
 # Cloudflare API Token 配置
 # ----------------------------
-echo "写入 Cloudflare API Token..."
+echo "[INFO] 写入 Cloudflare API Token..."
 cat > "$SECRETS_DIR/cloudflare.ini" <<EOF
 dns_cloudflare_api_token=${CF_API_TOKEN}
 EOF
@@ -122,21 +122,20 @@ chmod 600 "$SECRETS_DIR/cloudflare.ini"
 # ----------------------------
 # 申请证书
 # ----------------------------
-echo "申请 Let's Encrypt SSL 证书..."
-source "$ENV_DIR/bin/activate"
+echo "[INFO] 申请 SSL 证书..."
 certbot certonly \
   --dns-cloudflare \
   --dns-cloudflare-credentials "$SECRETS_DIR/cloudflare.ini" \
   -d n8n.aihelp.work \
   --non-interactive \
   --agree-tos \
-  --email your-email@example.com || echo "证书申请可能失败，继续执行"
-echo "证书申请完成"
+  --email your-email@example.com || echo "[WARN] 证书申请失败，继续执行"
+echo "[INFO] SSL 证书申请完成"
 
 # ----------------------------
 # Nginx SSL 配置
 # ----------------------------
-echo "配置 Nginx SSL..."
+echo "[INFO] 配置 Nginx SSL..."
 cat > /etc/nginx/sites-available/n8n_ssl <<EOF
 server {
     listen 80;
@@ -163,18 +162,18 @@ EOF
 sudo ln -sf /etc/nginx/sites-available/n8n_ssl /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl restart nginx
-echo "Nginx SSL 配置完成"
+echo "[INFO] Nginx SSL 配置完成"
 
 # ----------------------------
-# Cron 每2天自动续签
+# Cron 自动续签
 # ----------------------------
 (crontab -l 2>/dev/null; echo "0 3 */2 * * source $ENV_DIR/bin/activate && certbot renew --quiet && systemctl reload nginx") | crontab -
-echo "Cron 续签任务已设置"
+echo "[INFO] Cron 自动续签任务已设置"
 
 # ----------------------------
 # systemd 服务
 # ----------------------------
-echo "创建 systemd 服务开机自启..."
+echo "[INFO] 创建 systemd 服务..."
 SERVICE_FILE="/etc/systemd/system/n8n.service"
 sudo tee $SERVICE_FILE >/dev/null <<EOF
 [Unit]
@@ -197,7 +196,7 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable n8n.service
 sudo systemctl start n8n.service
-echo "systemd 服务已创建并启动"
+echo "[INFO] systemd 服务已创建并启动"
 
 echo "==== N8N 部署完成 ===="
 echo "虚拟环境路径: $ENV_DIR"
