@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==========================================
 # N8N ARM 完整部署脚本（Cloudflare 证书 + Python 虚拟环境 + systemd 开机自启）
-# 完全优化：消除 WARN / 不会中断 / 输出清晰
+# 完全优化：覆盖旧文件、消除 WARN / 不会中断 / 输出清晰
 # ==========================================
 set -e
 
@@ -21,10 +21,11 @@ sudo apt-get upgrade -y >/dev/null 2>&1
 sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip >/dev/null 2>&1
 
 # ----------------------------
-# 安装 Docker 必要组件
+# 安装 Docker 必要组件（覆盖旧 docker.gpg）
 # ----------------------------
 sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg >/dev/null 2>&1
+sudo rm -f /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg >/dev/null 2>&1
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 sudo apt-get update -y >/dev/null 2>&1
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
