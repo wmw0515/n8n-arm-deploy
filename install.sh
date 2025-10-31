@@ -1,12 +1,6 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（稳定版）
-# 特点：
-# - 自动端口检测与清理残留容器
-# - Docker Compose 部署 N8N
-# - Nginx 反代 + SSL（Certbot 虚拟环境安装）
-# - Cloudflare DNS 证书自动申请
-# - 完全避免 pyOpenSSL / OpenSSL 冲突
+# N8N ARM 完整部署脚本（最终稳定版）
 # ==========================================
 set -e
 
@@ -68,7 +62,7 @@ sudo mkdir -p /home/node/.n8n
 sudo chown -R 1000:1000 /home/node/.n8n
 
 # ----------------------------
-# Docker Compose 配置
+# Docker Compose 配置（修正 YAML 语法）
 # ----------------------------
 cat > /home/node/n8n-docker-compose.yml <<EOF
 services:
@@ -78,14 +72,14 @@ services:
     ports:
       - "${N8N_PORT_HOST}:5678"
     environment:
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
-      - N8N_HOST=n8n.aihelp.work
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=https
-      - NODE_ENV=production
-      - GENERIC_TIMEZONE=Asia/Shanghai
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: "${N8N_USER}"
+      N8N_BASIC_AUTH_PASSWORD: "${N8N_PASSWORD}"
+      N8N_HOST: "n8n.aihelp.work"
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: "https"
+      NODE_ENV: "production"
+      GENERIC_TIMEZONE: "Asia/Shanghai"
     volumes:
       - /home/node/.n8n:/home/node/.n8n
 EOF
