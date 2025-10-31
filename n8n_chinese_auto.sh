@@ -1,61 +1,66 @@
 #!/bin/bash
 set -e
 
-# === 用户输入部分 ===
-read -p "请输入 n8n 登录用户名 (默认 admin): " N8N_USER
-N8N_USER=${N8N_USER:-admin}
-
-read -s -p "请输入 n8n 登录密码: " N8N_PASSWORD
-echo
-
-# === 配置变量 ===
+# 进入 n8n 目录
 N8N_DIR="/root/n8n"
-DATA_DIR="$HOME/.n8n"
-I18N_URL="https://github.com/other-blowsnow/n8n-i18n-chinese/releases/download/n8n%401.117.3/editor-ui.tar.gz"
-PORT=5678  # 可以根据需要修改
-
-echo "🛠️ 停止旧容器..."
+mkdir -p "$N8N_DIR"
 cd "$N8N_DIR"
+
+# 修复挂载目录权限
+echo "🛠️ 修复挂载目录权限: ~/.n8n"
+mkdir -p ~/.n8n
+chown -R $(whoami):$(whoami) ~/.n8n
+
+# 检测空闲端口
+PORT=5678
+while lsof -i:$PORT &>/dev/null; do
+  PORT=$((PORT+1))
+done
+echo "✅ 使用端口: $PORT"
+
+# 停止旧容器
+echo "🛠️ 停止旧容器..."
 docker compose down || true
 
-echo "🛠️ 修复挂载目录权限: $DATA_DIR"
-mkdir -p "$DATA_DIR"
-chown -R 1000:1000 "$DATA_DIR"
-chmod -R 700 "$DATA_DIR"
+# 下载并解压汉化包
+echo "⬇️ 下载汉化包..."
+curl -L -o editor-ui.tar.gz "https://github.com/other-blowsnow/n8n-i18n-chinese/releases/download/n8n%401.117.3/editor-ui.tar.gz"
+echo "⬇️ 解压覆盖到 ~/.n8n"
+tar -xzf editor-ui.tar.gz -C ~/.n8n --strip-components=1
+rm editor-ui.tar.gz
 
-echo "⬇️ 下载中文汉化包..."
-TMP_TAR="/tmp/editor-ui.tar.gz"
-curl -L "$I18N_URL" -o "$TMP_TAR"
+# 提示用户输入 n8n 登录用户名和密码
+read -p "请输入 n8n 登录用户名: " N8N_USER
+read -s -p "请输入 n8n 登录密码: " N8N_PASS
+echo ""
 
-echo "🔄 解压覆盖到 n8n 数据目录..."
-tar -xzf "$TMP_TAR" -C "$DATA_DIR"
-rm -f "$TMP_TAR"
-
-echo "📝 生成 docker-compose.yml"
-cat > "$N8N_DIR/docker-compose.yml" <<EOF
+# 生成 docker-compose.yml
+cat > docker-compose.yml <<EOF
 services:
   n8n:
-    image: n8nio/n8n:latest
     container_name: n8n
-    ports:
-      - "${PORT}:5678"
+    image: n8nio/n8n:latest
+    restart: always
     environment:
       - N8N_DEFAULT_LOCALE=zh-CN
       - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_BASIC_AUTH_USER=$N8N_USER
+      - N8N_BASIC_AUTH_PASSWORD=$N8N_PASS
+    ports:
+      - "$PORT:5678"
     volumes:
-      - $DATA_DIR:/home/node/.n8n
-    restart: always
+      - ~/.n8n:/home/node/.n8n
+networks:
+  default:
+    name: n8n_default
 EOF
 
-echo "🔄 启动新容器..."
+# 启动新容器
+echo "🔄 启动 n8n 容器..."
 docker compose up -d --force-recreate
 
-echo "⏳ 等待容器启动..."
-sleep 5
-
-docker compose ps
-
-echo "🎉 完成！请用浏览器访问：http://<你的服务器IP>:${PORT}，登录用户名: ${N8N_USER}"
-echo "🌐 若界面仍为英文，请清除浏览器缓存或使用无痕模式。"
+# 输出信息
+echo "🌐 n8n 已启动，访问地址: http://<你的服务器IP>:$PORT"
+echo "用户名: $N8N_USER"
+echo "密码: (你输入的密码)"
+echo "🎉 n8n 已汉化完成，请刷新浏览器（必要时使用无痕模式）"
