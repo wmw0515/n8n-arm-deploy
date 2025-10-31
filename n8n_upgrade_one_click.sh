@@ -1,33 +1,19 @@
 #!/bin/bash
 
 # =========================================
-# n8n Docker 强制升级脚本（自动端口切换版）
+# n8n Docker 强制升级脚本（全自动版）
 # =========================================
 
-N8N_IMAGE="n8nio/n8n:latest"  # 可改为指定版本
-ENABLE_CHINESE=true            # 是否启用中文界面
+N8N_IMAGE="n8nio/n8n:latest"   # 可改为指定版本
+ENABLE_CHINESE=true             # 是否启用中文界面
 BACKUP_DIR="$HOME/n8n_backups" # 数据备份目录
-N8N_PORT=5678                  # 默认 n8n 宿主机端口
+DEFAULT_PORT=5678               # 默认 n8n 宿主机端口
 MAX_PORT=5700                   # 最大尝试端口号
 
-echo "🚀 开始 n8n 强制升级（自动端口切换版）..."
+echo "🚀 开始 n8n 强制升级（全自动版）..."
 
 # -----------------------------------------
-# 1. 查找可用端口
-# -----------------------------------------
-PORT=$N8N_PORT
-while lsof -i :$PORT -t >/dev/null 2>&1; do
-  echo "⚠️ 端口 $PORT 被占用，尝试下一个端口..."
-  PORT=$((PORT+1))
-  if [ $PORT -gt $MAX_PORT ]; then
-    echo "❌ 无可用端口，请手动释放端口 $N8N_PORT-$MAX_PORT"
-    exit 1
-  fi
-done
-echo "✅ 使用端口 $PORT 启动 n8n"
-
-# -----------------------------------------
-# 2. 自动查找 docker-compose.yml
+# 1. 自动查找 docker-compose.yml
 # -----------------------------------------
 echo "🔍 搜索 n8n docker-compose.yml ..."
 N8N_DIR=$(find / -name docker-compose.yml 2>/dev/null | grep n8n | head -n 1)
@@ -40,7 +26,7 @@ cd "$N8N_DIR" || exit
 echo "✅ 找到 docker-compose.yml: $N8N_DIR"
 
 # -----------------------------------------
-# 3. 检查当前版本
+# 2. 检查当前版本
 # -----------------------------------------
 CURRENT_CONTAINER=$(docker ps --format '{{.Names}}' | grep n8n | head -n 1)
 if [ -n "$CURRENT_CONTAINER" ]; then
@@ -53,7 +39,7 @@ else
 fi
 
 # -----------------------------------------
-# 4. 数据备份
+# 3. 数据备份
 # -----------------------------------------
 echo "📦 备份 n8n 数据..."
 mkdir -p "$BACKUP_DIR"
@@ -62,13 +48,31 @@ tar czvf "$BACKUP_FILE" ~/.n8n
 echo "✅ 数据备份完成: $BACKUP_FILE"
 
 # -----------------------------------------
-# 5. 停止并删除旧容器
+# 4. 停止并删除旧容器
 # -----------------------------------------
-echo "🛑 停止并删除旧容器..."
-docker compose down
+if [ -n "$CURRENT_CONTAINER" ]; then
+  echo "🛑 停止并删除旧容器..."
+  docker stop "$CURRENT_CONTAINER"
+  docker rm "$CURRENT_CONTAINER"
+  echo "✅ 旧容器已删除"
+fi
 
 # -----------------------------------------
-# 6. 拉取镜像
+# 5. 查找可用端口
+# -----------------------------------------
+PORT=$DEFAULT_PORT
+while lsof -i :$PORT -t >/dev/null 2>&1; do
+  echo "⚠️ 端口 $PORT 被占用，尝试下一个端口..."
+  PORT=$((PORT+1))
+  if [ $PORT -gt $MAX_PORT ]; then
+    echo "❌ 无可用端口，请手动释放端口 $DEFAULT_PORT-$MAX_PORT"
+    exit 1
+  fi
+done
+echo "✅ 使用端口 $PORT 启动 n8n"
+
+# -----------------------------------------
+# 6. 拉取最新镜像
 # -----------------------------------------
 echo "⬇️ 拉取镜像: $N8N_IMAGE"
 docker pull "$N8N_IMAGE"
@@ -82,7 +86,6 @@ echo "✅ docker-compose.yml 已更新为新镜像"
 # -----------------------------------------
 # 8. 更新 docker-compose.yml 端口
 # -----------------------------------------
-# 查找 ports 配置行，替换宿主机端口
 sed -i "s|.*:5678|$PORT:5678|" docker-compose.yml
 echo "✅ docker-compose.yml 端口已更新为 $PORT"
 
