@@ -25,7 +25,7 @@ sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip 
 # ----------------------------
 sudo mkdir -p /etc/apt/keyrings
 sudo rm -f /etc/apt/keyrings/docker.gpg
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg >/dev/null 2>&1
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg >/dev/null 2>&1
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 sudo apt-get update -y >/dev/null 2>&1
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
@@ -73,7 +73,7 @@ services:
 EOF
 
 cd /home/node
-# 临时关闭 set -e 并静默运行 Docker Compose
+# 临时关闭 set -e 并静默运行 Docker Compose，忽略 WARN
 set +e
 docker compose -f n8n-docker-compose.yml up -d >/dev/null 2>&1 || true
 set -e
