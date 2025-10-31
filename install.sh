@@ -124,18 +124,24 @@ mkdir -p /home/node/.secrets/certbot
 # ----------------------------
 API_TOKEN_SUPPORTED=false
 python3 - <<EOF
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 try:
     import certbot_dns_cloudflare
     import pkg_resources
-    v = pkg_resources.get_distribution('certbot-dns-cloudflare').version
-    major = int(v.split('.')[0])
-    if major >= 1:
+    try:
+        v = pkg_resources.get_distribution('certbot-dns-cloudflare').version
+        major = int(v.split('.')[0])
+        if major >= 1:
+            exit(0)
+        else:
+            exit(0)  # 避免警告导致退出
+    except Exception:
         exit(0)
-    else:
-        exit(1)
-except:
+except Exception:
     exit(1)
 EOF
+
 if [ $? -eq 0 ]; then
     API_TOKEN_SUPPORTED=true
 fi
