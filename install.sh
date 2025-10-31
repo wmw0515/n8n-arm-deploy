@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==========================================
 # N8N ARM 完整部署脚本（Cloudflare 证书 + Python 虚拟环境 + systemd 开机自启）
-# 完全优化：消除 WARN / 不会中断
+# 完全优化：消除 WARN / 不会中断 / 输出清晰
 # ==========================================
 set -e
 
@@ -16,20 +16,20 @@ echo
 # ----------------------------
 # 系统更新与依赖安装
 # ----------------------------
-sudo apt-get update -y
-sudo apt-get upgrade -y
-sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip
+sudo apt-get update -y >/dev/null 2>&1
+sudo apt-get upgrade -y >/dev/null 2>&1
+sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip >/dev/null 2>&1
 
 # ----------------------------
 # 安装 Docker 必要组件
 # ----------------------------
 sudo mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg >/dev/null 2>&1
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt-get update -y
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-sudo systemctl enable docker
-sudo systemctl start docker
+sudo apt-get update -y >/dev/null 2>&1
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
+sudo systemctl enable docker >/dev/null 2>&1
+sudo systemctl start docker >/dev/null 2>&1
 
 # ----------------------------
 # N8N 数据卷
@@ -43,11 +43,10 @@ sudo chown -R 1000:1000 /home/node/.n8n
 ENV_DIR="$HOME/n8n-env"
 if [ ! -d "$ENV_DIR" ]; then
     python3 -m venv "$ENV_DIR"
-    echo "虚拟环境已创建: $ENV_DIR"
 fi
 source "$ENV_DIR/bin/activate"
-pip install --upgrade pip > /dev/null
-pip install --upgrade certbot certbot-dns-cloudflare > /dev/null
+pip install --upgrade pip >/dev/null 2>&1
+pip install --upgrade certbot certbot-dns-cloudflare >/dev/null 2>&1
 
 # ----------------------------
 # Docker Compose 配置（去掉 version 字段）
@@ -73,9 +72,9 @@ services:
 EOF
 
 cd /home/node
-# 临时关闭 set -e 并静默输出 Docker Compose
+# 临时关闭 set -e 并静默运行 Docker Compose
 set +e
-docker compose -f n8n-docker-compose.yml up -d >/dev/null 2>&1
+docker compose -f n8n-docker-compose.yml up -d >/dev/null 2>&1 || true
 set -e
 
 # ----------------------------
@@ -98,7 +97,7 @@ server {
 EOF
 sudo ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
 sudo nginx -t >/dev/null 2>&1
-sudo systemctl restart nginx
+sudo systemctl restart nginx >/dev/null 2>&1
 
 # ----------------------------
 # Cloudflare API Token 配置
@@ -137,7 +136,7 @@ fi
 chmod 600 /home/node/.secrets/certbot/cloudflare.ini
 
 # ----------------------------
-# 申请证书（虚拟环境内执行，静默输出）
+# 申请证书（虚拟环境内执行，失败也不停止安装）
 # ----------------------------
 source "$ENV_DIR/bin/activate"
 certbot certonly \
@@ -176,7 +175,7 @@ server {
 EOF
 sudo ln -sf /etc/nginx/sites-available/n8n_ssl /etc/nginx/sites-enabled/
 sudo nginx -t >/dev/null 2>&1
-sudo systemctl restart nginx
+sudo systemctl restart nginx >/dev/null 2>&1
 
 # ----------------------------
 # Cron 每2天检查证书
