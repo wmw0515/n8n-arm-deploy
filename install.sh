@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（智能 Cloudflare 证书 + 端口自动检测）
+# N8N ARM 完整部署脚本（智能 Cloudflare 证书 + 自动端口处理 + 自动清理残留容器）
 # ==========================================
 set -e
 
@@ -31,13 +31,38 @@ sudo systemctl enable docker
 sudo systemctl start docker
 
 # ----------------------------
-# 检查端口 5678 是否可用，如果被占用自动切换到 5679
+# 检查 N8N 宿主机端口并自动清理占用
 # ----------------------------
+check_port() {
+    local port=$1
+    if lsof -i:${port} >/dev/null 2>&1; then
+        echo "[WARN] 端口 ${port} 被占用，尝试清理 Docker 容器和进程..."
+        # 停止并删除占用该端口的容器
+        containers=$(docker ps -a --filter "publish=${port}" --format "{{.ID}}")
+        if [ -n "$containers" ]; then
+            echo "[INFO] 停止并删除占用端口的容器: $containers"
+            docker stop $containers || true
+            docker rm $containers || true
+        fi
+        # 杀掉占用端口的进程（docker-proxy等）
+        sudo fuser -k ${port}/tcp || true
+        sleep 1
+        if lsof -i:${port} >/dev/null 2>&1; then
+            echo "[WARN] 端口 ${port} 仍被占用"
+            return 1
+        fi
+    fi
+    return 0
+}
+
 N8N_PORT_HOST=5678
-if lsof -i:${N8N_PORT_HOST} >/dev/null 2>&1; then
-    echo "[WARN] 端口 ${N8N_PORT_HOST} 被占用，尝试使用 5679"
+if ! check_port ${N8N_PORT_HOST}; then
+    echo "[INFO] 端口 5678 不可用，尝试使用 5679"
     N8N_PORT_HOST=5679
+    check_port ${N8N_PORT_HOST} || { echo "[ERROR] 端口 5679 也被占用，无法安装 N8N"; exit 1; }
 fi
+
+echo "[INFO] N8N 将使用宿主机端口: ${N8N_PORT_HOST}"
 
 # ----------------------------
 # N8N 数据卷
