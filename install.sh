@@ -1,141 +1,88 @@
 #!/bin/bash
-# ==============================================
-# ARM 服务器增强版一键部署 N8N + Nginx + Cloudflare HTTPS + 用户认证 + 自动续签
-# 域名固定: n8n.aihelp.work
-# ==============================================
+# ==========================================
+# N8N ARM 完整部署脚本（最终版）
+# 支持 ARM 服务器，Docker 必要组件安装
+# N8N 数据卷权限修复 + Nginx 反代 + Cloudflare HTTPS
+# 支持输入 N8N 登录用户名和密码
+# ==========================================
 
 set -e
 
-echo "开始增强版部署 n8n (ARM) + Nginx + HTTPS + 用户认证 ..."
+# ----------------------------
+# 用户交互输入
+# ----------------------------
+read -p "请输入你的 Cloudflare API Token: " CF_API_TOKEN
+read -p "请输入 N8N 登录用户名: " N8N_USER
+read -s -p "请输入 N8N 登录密码: " N8N_PASSWORD
+echo
 
-# ------------------------------
-# 1. 卸载可能残留的 docker 包
-# ------------------------------
-apt remove -y docker docker-engine docker.io containerd runc || true
-apt autoremove -y
-apt update
+# ----------------------------
+# 更新系统并安装必要工具
+# ----------------------------
+sudo apt-get update -y
+sudo apt-get upgrade -y
+sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo
 
-# ------------------------------
-# 2. 安装必要基础软件
-# ------------------------------
-apt install -y curl wget git sudo nginx certbot python3-certbot-dns-cloudflare lsb-release gnupg ca-certificates
+# ----------------------------
+# 安装 Docker（仅必要组件）
+# ----------------------------
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-# ------------------------------
-# 3. 安装官方 Docker（包含 containerd，支持 ARM）
-# ------------------------------
-echo "安装 Docker 官方版本..."
-curl -fsSL https://get.docker.com | sh
-systemctl enable docker
-systemctl start docker
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-# 安装 Docker Compose 插件（如果不存在）
-docker compose version >/dev/null 2>&1 || curl -SL https://github.com/docker/compose/releases/download/v2.20.2/docker-compose-linux-$(uname -m) -o /usr/local/bin/docker-compose && chmod +x /usr/local/bin/docker-compose
+sudo systemctl enable docker
+sudo systemctl start docker
 
-# ------------------------------
-# 4. 提示输入 Cloudflare API Token
-# ------------------------------
-read -p "请输入 Cloudflare API Token（用于自动签发证书）: " CF_API_TOKEN
-CF_API_FILE="/home/n8n/certbot/cloudflare.ini"
-mkdir -p $(dirname $CF_API_FILE)
-cat > $CF_API_FILE <<EOF
-dns_cloudflare_api_token = $CF_API_TOKEN
-EOF
-chmod 600 $CF_API_FILE
+# ----------------------------
+# 创建 N8N 数据卷并修复权限
+# ----------------------------
+sudo mkdir -p /home/node/.n8n
+sudo chown -R 1000:1000 /home/node/.n8n
 
-# ------------------------------
-# 5. 提示用户设置 n8n 登录用户名和密码
-# ------------------------------
-read -p "请设置 n8n 登录用户名: " N8N_USER
-read -s -p "请设置 n8n 登录密码: " N8N_PASSWORD
-echo ""
-
-# ------------------------------
-# 6. 创建 n8n 数据目录并修复权限
-# ------------------------------
-N8N_DATA="/home/n8n"
-mkdir -p $N8N_DATA
-chown -R 1000:1000 $N8N_DATA
-
-# ------------------------------
-# 7. 自动识别 ARM 架构
-# ------------------------------
-ARCH=$(uname -m)
-if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
-  N8N_IMAGE="n8nio/n8n:arm64"
-else
-  N8N_IMAGE="n8nio/n8n"
-fi
-docker pull $N8N_IMAGE
-
-# ------------------------------
-# 8. Docker Compose 文件
-# ------------------------------
-DOMAIN="n8n.aihelp.work"
-mkdir -p certbot/conf certbot/www
-
-cat > docker-compose.yml <<EOF
-version: "3"
-
+# ----------------------------
+# 创建 Docker Compose 文件
+# ----------------------------
+cat > /home/node/n8n-docker-compose.yml <<EOF
+version: "3.8"
 services:
   n8n:
-    image: $N8N_IMAGE
-    container_name: n8n
-    restart: unless-stopped
+    image: n8nio/n8n
+    restart: always
     ports:
       - "5678:5678"
     environment:
-      - N8N_HOST=$DOMAIN
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - NODE_ENV=production
       - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=$N8N_USER
-      - N8N_BASIC_AUTH_PASSWORD=$N8N_PASSWORD
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - N8N_HOST=n8n.aihelp.work
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - NODE_ENV=production
+      - GENERIC_TIMEZONE=Asia/Shanghai
     volumes:
-      - $N8N_DATA:/home/node/.n8n
-
-  nginx:
-    image: nginx:stable-alpine
-    container_name: nginx_n8n
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./certbot/conf:/etc/letsencrypt
-      - ./certbot/www:/var/www/certbot
+      - /home/node/.n8n:/home/node/.n8n
 EOF
 
-# ------------------------------
-# 9. Nginx 配置文件
-# ------------------------------
-cat > nginx.conf <<EOF
+# ----------------------------
+# 启动 N8N
+# ----------------------------
+cd /home/node
+docker compose -f n8n-docker-compose.yml up -d
+
+# ----------------------------
+# 安装 Nginx 并配置反代
+# ----------------------------
+sudo apt-get install -y nginx
+cat > /etc/nginx/sites-available/n8n <<EOF
 server {
     listen 80;
-    server_name $DOMAIN;
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
+    server_name n8n.aihelp.work;
 
     location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-    location / {
-        proxy_pass http://n8n:5678;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
+        proxy_pass http://127.0.0.1:5678;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -144,71 +91,65 @@ server {
 }
 EOF
 
-# ------------------------------
-# 10. 启动容器
-# ------------------------------
-docker-compose up -d
+sudo ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
 
-# ------------------------------
-# 11. Cloudflare DNS 验证申请 HTTPS
-# ------------------------------
-echo "申请 HTTPS 证书..."
-docker run -it --rm \
-  -v $(pwd)/certbot/conf:/etc/letsencrypt \
-  -v $(pwd)/certbot/www:/var/www/certbot \
-  -v $(pwd)/certbot/cloudflare.ini:/etc/letsencrypt/cloudflare.ini:ro \
-  certbot/certbot certonly \
-  --dns-cloudflare \
-  --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-  -d $DOMAIN \
-  --agree-tos --email your-email@example.com --non-interactive
+# ----------------------------
+# 安装 Certbot (Cloudflare DNS)
+# ----------------------------
+sudo apt-get install -y certbot python3-certbot-dns-cloudflare
 
-docker exec nginx_n8n nginx -s reload
-
-# ------------------------------
-# 12. 自动续签脚本
-# ------------------------------
-cat > /home/n8n/renew_cert.sh <<'EOF'
-#!/bin/bash
-docker run -it --rm \
-  -v /home/n8n/certbot/conf:/etc/letsencrypt \
-  -v /home/n8n/certbot/www:/var/www/certbot \
-  -v /home/n8n/certbot/cloudflare.ini:/etc/letsencrypt/cloudflare.ini:ro \
-  certbot/certbot renew \
-  --dns-cloudflare \
-  --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-  --pre-hook "docker-compose stop nginx" \
-  --post-hook "docker-compose start nginx"
+# 创建 Cloudflare 配置文件
+mkdir -p /home/node/.secrets/certbot
+cat > /home/node/.secrets/certbot/cloudflare.ini <<EOF
+dns_cloudflare_api_token = ${CF_API_TOKEN}
 EOF
-chmod +x /home/n8n/renew_cert.sh
+chmod 600 /home/node/.secrets/certbot/cloudflare.ini
 
-# ------------------------------
-# 13. 设置 Cron 每 2 天检查证书
-# ------------------------------
-(crontab -l 2>/dev/null; echo "0 3 */2 * * /home/n8n/renew_cert.sh >> /home/n8n/renew_cert.log 2>&1") | crontab -
+# ----------------------------
+# 获取证书并自动续签
+# ----------------------------
+certbot certonly \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials /home/node/.secrets/certbot/cloudflare.ini \
+  -d n8n.aihelp.work \
+  --non-interactive \
+  --agree-tos \
+  --email your-email@example.com
 
-# ------------------------------
-# 14. 输出访问与管理指南
-# ------------------------------
-cat <<EOL
+# 配置 Nginx SSL
+cat > /etc/nginx/sites-available/n8n_ssl <<EOF
+server {
+    listen 80;
+    server_name n8n.aihelp.work;
+    return 301 https://\$host\$request_uri;
+}
 
-==================== 部署完成 ====================
+server {
+    listen 443 ssl;
+    server_name n8n.aihelp.work;
 
-访问网址: https://$DOMAIN
-n8n 登录用户名: $N8N_USER
-n8n 登录密码: 你设置的密码
+    ssl_certificate /etc/letsencrypt/live/n8n.aihelp.work/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/n8n.aihelp.work/privkey.pem;
 
-证书自动续签脚本: /home/n8n/renew_cert.sh
-Cron 每 2 天自动检查一次证书，续签成功后自动重启 Nginx
+    location / {
+        proxy_pass http://127.0.0.1:5678;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+EOF
 
-管理命令示例:
-  查看容器: docker ps
-  启动容器: docker-compose up -d
-  重启 n8n: docker restart n8n
-  手动续签证书: /home/n8n/renew_cert.sh
+sudo ln -sf /etc/nginx/sites-available/n8n_ssl /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
 
-=================================================
+# ----------------------------
+# 设置 cron 每2天检查一次证书
+# ----------------------------
+(crontab -l 2>/dev/null; echo "0 3 */2 * * certbot renew --quiet && systemctl reload nginx") | crontab -
 
-EOL
-
-docker ps
+echo "部署完成！N8N 用户名和密码已设置，可直接登录 N8N UI。"
