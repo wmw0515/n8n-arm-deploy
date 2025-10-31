@@ -1,17 +1,34 @@
 #!/bin/bash
 # ==========================================
 # N8N ARM 完整部署脚本（Cloudflare 证书 + Python 虚拟环境 + systemd 开机自启）
-# 完全优化：覆盖旧文件、消除 WARN / 不会中断 / 输出清晰
+# 支持环境变量或交互输入，完全无人值守
 # ==========================================
 set -e
 
 # ----------------------------
-# 用户交互输入
+# 用户输入 / 环境变量读取
 # ----------------------------
-read -p "请输入你的 Cloudflare API Token（推荐）: " CF_API_TOKEN
-read -p "请输入 N8N 登录用户名: " N8N_USER
-read -s -p "请输入 N8N 登录密码: " N8N_PASSWORD
-echo
+: "${CF_API_TOKEN:=}"
+: "${N8N_USER:=}"
+: "${N8N_PASSWORD:=}"
+
+if [ -z "$CF_API_TOKEN" ]; then
+    read -p "请输入你的 Cloudflare API Token（推荐）: " CF_API_TOKEN
+fi
+
+if [ -z "$N8N_USER" ]; then
+    read -p "请输入 N8N 登录用户名: " N8N_USER
+fi
+
+if [ -z "$N8N_PASSWORD" ]; then
+    if [ -t 0 ]; then
+        read -s -p "请输入 N8N 登录密码: " N8N_PASSWORD
+        echo
+    else
+        echo "错误：N8N_PASSWORD 未设置环境变量，且无法交互输入"
+        exit 1
+    fi
+fi
 
 # ----------------------------
 # 系统更新与依赖安装
@@ -21,7 +38,7 @@ sudo apt-get upgrade -y >/dev/null 2>&1
 sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip >/dev/null 2>&1
 
 # ----------------------------
-# 安装 Docker 必要组件（覆盖旧 docker.gpg）
+# 安装 Docker（覆盖旧 docker.gpg，无交互）
 # ----------------------------
 sudo mkdir -p /etc/apt/keyrings
 sudo rm -f /etc/apt/keyrings/docker.gpg
@@ -73,7 +90,6 @@ services:
 EOF
 
 cd /home/node
-# 临时关闭 set -e 并静默运行 Docker Compose，忽略 WARN
 set +e
 docker compose -f n8n-docker-compose.yml up -d >/dev/null 2>&1 || true
 set -e
@@ -127,8 +143,12 @@ if [ "$API_TOKEN_SUPPORTED" = true ]; then
 dns_cloudflare_api_token=${CF_API_TOKEN}
 EOF
 else
-    read -p "请输入你的 Cloudflare 账户邮箱: " CF_EMAIL
-    read -p "请输入你的 Cloudflare Global API Key: " CF_GLOBAL_KEY
+    if [ -z "$CF_EMAIL" ]; then
+        read -p "请输入你的 Cloudflare 账户邮箱: " CF_EMAIL
+    fi
+    if [ -z "$CF_GLOBAL_KEY" ]; then
+        read -p "请输入你的 Cloudflare Global API Key: " CF_GLOBAL_KEY
+    fi
     cat > /home/node/.secrets/certbot/cloudflare.ini <<EOF
 dns_cloudflare_email=${CF_EMAIL}
 dns_cloudflare_api_key=${CF_GLOBAL_KEY}
