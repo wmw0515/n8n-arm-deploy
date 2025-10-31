@@ -34,7 +34,6 @@ docker pull n8nio/n8n:latest
 # 生成 docker-compose.yml
 echo "📝 生成 docker-compose.yml"
 mkdir -p "$N8N_DIR"
-# 这里 EOF 必须左对齐
 cat > "$N8N_DIR/docker-compose.yml" <<EOF
 services:
   n8n:
