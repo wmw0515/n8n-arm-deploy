@@ -1,34 +1,33 @@
 #!/bin/bash
-# ===================================================
-# n8n 中文汉化一键安装脚本 (仅汉化，无其他多余操作)
-# 版本: 1.117.3
-# 作者: ChatGPT 定制
-# ===================================================
+set -e
 
-# 1. 创建工作目录
-mkdir -p /root/n8n-i18n
-cd /root/n8n-i18n
+# 配置
+N8N_PORT=5679
+I18N_DIR="/root/n8n/i18n"
+I18N_URL="https://github.com/other-blowsnow/n8n-i18n-chinese/releases/download/n8n%401.117.3/editor-ui.tar.gz"
 
-# 2. 下载汉化编辑器UI文件
-echo "🔽 正在下载 n8n 中文汉化文件..."
-wget -O editor-ui.tar.gz "https://github.com/other-blowsnow/n8n-i18n-chinese/releases/download/n8n%401.117.3/editor-ui.tar.gz"
+echo "🛠️ 停止并删除旧容器..."
+docker rm -f n8n 2>/dev/null || true
 
-# 3. 解压汉化文件
-echo "📦 正在解压..."
-mkdir -p /root/n8n-i18n/editor-ui
-tar -xzvf editor-ui.tar.gz -C /root/n8n-i18n/editor-ui --strip-components=1
+echo "🛠️ 创建汉化目录: $I18N_DIR"
+mkdir -p "$I18N_DIR"
 
-# 4. 启动 n8n（端口15678，对应网页 http://服务器IP:15678）
-echo "🚀 正在启动 n8n（中文汉化版）..."
-docker run -d --name n8n \
-  -p 15678:5678 \
-  -v /root/n8n-i18n/editor-ui:/usr/local/lib/node_modules/n8n/node_modules/n8n-editor-ui/dist \
+echo "⬇️ 下载汉化文件..."
+curl -L "$I18N_URL" -o "$I18N_DIR/editor-ui.tar.gz"
+
+echo "🧹 解压汉化文件..."
+tar -xzf "$I18N_DIR/editor-ui.tar.gz" -C "$I18N_DIR"
+rm -f "$I18N_DIR/editor-ui.tar.gz"
+
+echo "🌐 启动 N8N 中文版..."
+docker run -it -d --name n8n \
+  -p $N8N_PORT:5678 \
+  -v "$I18N_DIR":/usr/local/lib/node_modules/n8n/node_modules/n8n-editor-ui/dist \
   -v ~/.n8n:/home/node/.n8n \
   -e N8N_DEFAULT_LOCALE=zh-CN \
   -e N8N_SECURE_COOKIE=false \
-  n8nio/n8n:1.117.3
+  n8nio/n8n
 
-echo ""
-echo "✅ n8n 汉化版启动完成！"
-echo "🌐 请在浏览器中访问: http://你的服务器IP:15678"
-echo "⚠️ 若界面仍为英文，请清空浏览器缓存或使用无痕模式访问。"
+echo "🎉 N8N 已启动！"
+echo "💻 访问地址: http://<你的服务器IP>:$N8N_PORT"
+echo "✅ 中文界面已启用"
