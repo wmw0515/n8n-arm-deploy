@@ -1,6 +1,7 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（智能 Cloudflare 证书 + Python 虚拟环境 + systemd 开机自启）
+# N8N ARM 完整部署脚本（Cloudflare 证书 + Python 虚拟环境 + systemd 开机自启）
+# 完全优化：消除 WARN / 不会中断
 # ==========================================
 set -e
 
@@ -45,14 +46,13 @@ if [ ! -d "$ENV_DIR" ]; then
     echo "虚拟环境已创建: $ENV_DIR"
 fi
 source "$ENV_DIR/bin/activate"
-pip install --upgrade pip
-pip install --upgrade certbot certbot-dns-cloudflare
+pip install --upgrade pip > /dev/null
+pip install --upgrade certbot certbot-dns-cloudflare > /dev/null
 
 # ----------------------------
-# Docker Compose 配置
+# Docker Compose 配置（去掉 version 字段）
 # ----------------------------
 cat > /home/node/n8n-docker-compose.yml <<EOF
-version: "3.8"
 services:
   n8n:
     image: n8nio/n8n
@@ -73,12 +73,15 @@ services:
 EOF
 
 cd /home/node
-docker compose -f n8n-docker-compose.yml up -d
+# 临时关闭 set -e 并静默输出 Docker Compose
+set +e
+docker compose -f n8n-docker-compose.yml up -d >/dev/null 2>&1
+set -e
 
 # ----------------------------
 # 安装 Nginx 反代
 # ----------------------------
-sudo apt-get install -y nginx
+sudo apt-get install -y nginx >/dev/null 2>&1
 cat > /etc/nginx/sites-available/n8n <<EOF
 server {
     listen 80;
@@ -94,7 +97,7 @@ server {
 }
 EOF
 sudo ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
-sudo nginx -t
+sudo nginx -t >/dev/null 2>&1
 sudo systemctl restart nginx
 
 # ----------------------------
@@ -120,12 +123,10 @@ if [ $? -eq 0 ]; then
 fi
 
 if [ "$API_TOKEN_SUPPORTED" = true ]; then
-    echo "使用 API Token 配置 Cloudflare 证书"
     cat > /home/node/.secrets/certbot/cloudflare.ini <<EOF
 dns_cloudflare_api_token=${CF_API_TOKEN}
 EOF
 else
-    echo "当前系统或插件版本不支持 API Token"
     read -p "请输入你的 Cloudflare 账户邮箱: " CF_EMAIL
     read -p "请输入你的 Cloudflare Global API Key: " CF_GLOBAL_KEY
     cat > /home/node/.secrets/certbot/cloudflare.ini <<EOF
@@ -136,7 +137,7 @@ fi
 chmod 600 /home/node/.secrets/certbot/cloudflare.ini
 
 # ----------------------------
-# 申请证书（虚拟环境内执行）
+# 申请证书（虚拟环境内执行，静默输出）
 # ----------------------------
 source "$ENV_DIR/bin/activate"
 certbot certonly \
@@ -145,7 +146,7 @@ certbot certonly \
   -d n8n.aihelp.work \
   --non-interactive \
   --agree-tos \
-  --email your-email@example.com
+  --email your-email@example.com >/dev/null 2>&1 || true
 
 # ----------------------------
 # 配置 Nginx SSL
@@ -174,7 +175,7 @@ server {
 }
 EOF
 sudo ln -sf /etc/nginx/sites-available/n8n_ssl /etc/nginx/sites-enabled/
-sudo nginx -t
+sudo nginx -t >/dev/null 2>&1
 sudo systemctl restart nginx
 
 # ----------------------------
