@@ -1,7 +1,6 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（无人值守）
-# 支持环境变量传入用户名、密码和 Cloudflare Token
+# N8N ARM 完整部署脚本（无人值守 + 可见进度）
 # ==========================================
 set -e
 
@@ -12,44 +11,55 @@ set -e
 : "${N8N_PASSWORD:?请先设置环境变量 N8N_PASSWORD}"
 : "${CF_API_TOKEN:?请先设置环境变量 CF_API_TOKEN}"
 
+echo "==== 开始部署 N8N ===="
+
+# ----------------------------
+# 定义路径
+# ----------------------------
+N8N_DIR="$HOME/n8n"
+SECRETS_DIR="$N8N_DIR/.secrets/certbot"
+ENV_DIR="$HOME/n8n-env"
+
+mkdir -p "$N8N_DIR/.n8n" "$SECRETS_DIR"
+echo "创建数据卷和证书目录: $N8N_DIR/.n8n , $SECRETS_DIR"
+
 # ----------------------------
 # 系统更新与依赖
 # ----------------------------
-sudo apt-get update -y >/dev/null 2>&1
-sudo apt-get upgrade -y >/dev/null 2>&1
-sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip >/dev/null 2>&1
+echo "更新系统和安装依赖..."
+sudo apt-get update -y
+sudo apt-get upgrade -y
+sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv unzip nginx >/dev/null 2>&1
 
 # ----------------------------
-# 安装 Docker（覆盖旧 gpg 无交互）
+# 安装 Docker
 # ----------------------------
+echo "安装 Docker..."
 sudo mkdir -p /etc/apt/keyrings
 sudo rm -f /etc/apt/keyrings/docker.gpg
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg >/dev/null 2>&1
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-sudo apt-get update -y >/dev/null 2>&1
-sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null 2>&1
-sudo systemctl enable docker >/dev/null 2>&1
-sudo systemctl start docker >/dev/null 2>&1
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo systemctl enable docker
+sudo systemctl start docker
+echo "Docker 安装完成"
 
 # ----------------------------
-# N8N 数据卷
+# Python 虚拟环境安装 Certbot
 # ----------------------------
-sudo mkdir -p /home/node/.n8n
-sudo chown -R 1000:1000 /home/node/.n8n
-
-# ----------------------------
-# Python 虚拟环境 & Certbot
-# ----------------------------
-ENV_DIR="$HOME/n8n-env"
+echo "创建 Python 虚拟环境并安装 Certbot..."
 python3 -m venv "$ENV_DIR"
 source "$ENV_DIR/bin/activate"
 pip install --upgrade pip >/dev/null 2>&1
 pip install --upgrade certbot certbot-dns-cloudflare >/dev/null 2>&1
+echo "Certbot 安装完成"
 
 # ----------------------------
-# Docker Compose 配置（去掉 version）
+# Docker Compose 配置
 # ----------------------------
-cat > /home/node/n8n-docker-compose.yml <<EOF
+echo "生成 Docker Compose 配置..."
+cat > "$N8N_DIR/n8n-docker-compose.yml" <<EOF
 services:
   n8n:
     image: n8nio/n8n
@@ -66,16 +76,21 @@ services:
       - NODE_ENV=production
       - GENERIC_TIMEZONE=Asia/Shanghai
     volumes:
-      - /home/node/.n8n:/home/node/.n8n
+      - $N8N_DIR/.n8n:/home/node/.n8n
 EOF
 
-cd /home/node
-docker compose -f n8n-docker-compose.yml up -d >/dev/null 2>&1 || true
+# ----------------------------
+# 启动 N8N Docker
+# ----------------------------
+echo "启动 N8N Docker 服务..."
+cd "$N8N_DIR"
+docker compose -f n8n-docker-compose.yml up -d
+echo "N8N Docker 服务已启动"
 
 # ----------------------------
-# 安装 Nginx 反代
+# Nginx 反代配置
 # ----------------------------
-sudo apt-get install -y nginx >/dev/null 2>&1
+echo "配置 Nginx 反代..."
 cat > /etc/nginx/sites-available/n8n <<EOF
 server {
     listen 80;
@@ -91,32 +106,37 @@ server {
 }
 EOF
 sudo ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
-sudo nginx -t >/dev/null 2>&1
-sudo systemctl restart nginx >/dev/null 2>&1
+sudo nginx -t
+sudo systemctl restart nginx
+echo "Nginx 配置完成"
 
 # ----------------------------
 # Cloudflare API Token 配置
 # ----------------------------
-mkdir -p /home/node/.secrets/certbot
-cat > /home/node/.secrets/certbot/cloudflare.ini <<EOF
+echo "写入 Cloudflare API Token..."
+cat > "$SECRETS_DIR/cloudflare.ini" <<EOF
 dns_cloudflare_api_token=${CF_API_TOKEN}
 EOF
-chmod 600 /home/node/.secrets/certbot/cloudflare.ini
+chmod 600 "$SECRETS_DIR/cloudflare.ini"
 
 # ----------------------------
-# 申请证书（失败也不阻塞安装）
+# 申请证书
 # ----------------------------
+echo "申请 Let's Encrypt SSL 证书..."
+source "$ENV_DIR/bin/activate"
 certbot certonly \
   --dns-cloudflare \
-  --dns-cloudflare-credentials /home/node/.secrets/certbot/cloudflare.ini \
+  --dns-cloudflare-credentials "$SECRETS_DIR/cloudflare.ini" \
   -d n8n.aihelp.work \
   --non-interactive \
   --agree-tos \
-  --email your-email@example.com >/dev/null 2>&1 || true
+  --email your-email@example.com || echo "证书申请可能失败，继续执行"
+echo "证书申请完成"
 
 # ----------------------------
-# 配置 Nginx SSL
+# Nginx SSL 配置
 # ----------------------------
+echo "配置 Nginx SSL..."
 cat > /etc/nginx/sites-available/n8n_ssl <<EOF
 server {
     listen 80;
@@ -141,17 +161,20 @@ server {
 }
 EOF
 sudo ln -sf /etc/nginx/sites-available/n8n_ssl /etc/nginx/sites-enabled/
-sudo nginx -t >/dev/null 2>&1
-sudo systemctl restart nginx >/dev/null 2>&1
+sudo nginx -t
+sudo systemctl restart nginx
+echo "Nginx SSL 配置完成"
 
 # ----------------------------
-# Cron 每2天检查证书
+# Cron 每2天自动续签
 # ----------------------------
 (crontab -l 2>/dev/null; echo "0 3 */2 * * source $ENV_DIR/bin/activate && certbot renew --quiet && systemctl reload nginx") | crontab -
+echo "Cron 续签任务已设置"
 
 # ----------------------------
-# 创建 systemd 服务，实现开机自启
+# systemd 服务
 # ----------------------------
+echo "创建 systemd 服务开机自启..."
 SERVICE_FILE="/etc/systemd/system/n8n.service"
 sudo tee $SERVICE_FILE >/dev/null <<EOF
 [Unit]
@@ -162,20 +185,21 @@ Requires=docker.service
 [Service]
 Type=simple
 User=$USER
-WorkingDirectory=/home/node
-ExecStart=/bin/bash -c 'source $ENV_DIR/bin/activate && docker compose -f /home/node/n8n-docker-compose.yml up'
-ExecStop=/bin/bash -c 'docker compose -f /home/node/n8n-docker-compose.yml down'
+WorkingDirectory=$N8N_DIR
+ExecStart=/bin/bash -c 'source $ENV_DIR/bin/activate && docker compose -f $N8N_DIR/n8n-docker-compose.yml up'
+ExecStop=/bin/bash -c 'docker compose -f $N8N_DIR/n8n-docker-compose.yml down'
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
 sudo systemctl daemon-reload
 sudo systemctl enable n8n.service
 sudo systemctl start n8n.service
+echo "systemd 服务已创建并启动"
 
-echo "部署完成！虚拟环境路径: $ENV_DIR"
-echo "N8N 用户名和密码已设置，可直接登录 N8N UI。"
-echo "N8N 已配置为 systemd 服务开机自启：sudo systemctl status n8n.service 查看状态"
+echo "==== N8N 部署完成 ===="
+echo "虚拟环境路径: $ENV_DIR"
+echo "N8N 用户名/密码已设置，可直接登录 N8N UI"
+echo "查看服务状态: sudo systemctl status n8n.service"
