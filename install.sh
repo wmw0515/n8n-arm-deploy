@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（最终稳定版）
+# N8N ARM 完整部署脚本（健康检查 + 自动 Nginx）
 # ==========================================
 set -e
 
@@ -19,7 +19,7 @@ sudo apt-get update -y
 sudo apt-get upgrade -y
 sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv lsof build-essential libffi-dev libssl-dev
 
-# 卸载系统旧版 pyOpenSSL 避免冲突
+# 卸载旧版 pyOpenSSL 避免冲突
 sudo python3 -m pip uninstall -y pyOpenSSL cryptography cffi || true
 
 # ----------------------------
@@ -41,7 +41,6 @@ if lsof -i:${N8N_PORT_HOST} >/dev/null 2>&1; then
     echo "[WARN] 端口 ${N8N_PORT_HOST} 被占用，尝试清理 Docker 容器和进程..."
     containers=$(docker ps -a --filter "publish=${N8N_PORT_HOST}" --format "{{.ID}}")
     if [ -n "$containers" ]; then
-        echo "[INFO] 停止并删除占用端口的容器: $containers"
         docker stop $containers || true
         docker rm $containers || true
     fi
@@ -62,7 +61,7 @@ sudo mkdir -p /home/node/.n8n
 sudo chown -R 1000:1000 /home/node/.n8n
 
 # ----------------------------
-# Docker Compose 配置（修正 YAML 语法）
+# Docker Compose 配置
 # ----------------------------
 cat > /home/node/n8n-docker-compose.yml <<EOF
 services:
@@ -88,26 +87,27 @@ cd /home/node
 docker compose -f n8n-docker-compose.yml up -d
 
 # ----------------------------
-# 安装 Nginx 反代
+# 等待 N8N 容器启动
+# ----------------------------
+echo "[INFO] 等待 N8N 容器启动..."
+max_retries=30
+count=0
+while ! curl -s "http://127.0.0.1:${N8N_PORT_HOST}/healthz" >/dev/null 2>&1; do
+    count=$((count+1))
+    if [ $count -gt $max_retries ]; then
+        echo "[ERROR] N8N 容器启动超时，请检查 Docker 容器状态"
+        docker logs -f n8n
+        exit 1
+    fi
+    sleep 2
+done
+echo "[INFO] N8N 容器已启动"
+
+# ----------------------------
+# 安装 Nginx
 # ----------------------------
 sudo apt-get install -y nginx
-cat > /etc/nginx/sites-available/n8n <<EOF
-server {
-    listen 80;
-    server_name n8n.aihelp.work;
-
-    location / {
-        proxy_pass http://127.0.0.1:${N8N_PORT_HOST};
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-sudo ln -sf /etc/nginx/sites-available/n8n /etc/nginx/sites-enabled/
-sudo nginx -t
-sudo systemctl restart nginx
+sudo rm -f /etc/nginx/sites-enabled/n8n /etc/nginx/sites-enabled/n8n_ssl
 
 # ----------------------------
 # Certbot 虚拟环境
@@ -116,11 +116,10 @@ python3 -m venv /home/node/n8n-env
 source /home/node/n8n-env/bin/activate
 pip install --upgrade pip setuptools wheel
 pip install certbot certbot-dns-cloudflare pyOpenSSL cryptography cffi
-
 mkdir -p /home/node/.secrets/certbot
 
 # ----------------------------
-# 配置 Cloudflare
+# 配置 Cloudflare API Token
 # ----------------------------
 API_TOKEN_SUPPORTED=false
 python3 - <<EOF
@@ -131,11 +130,7 @@ try:
     import pkg_resources
     try:
         v = pkg_resources.get_distribution('certbot-dns-cloudflare').version
-        major = int(v.split('.')[0])
-        if major >= 1:
-            exit(0)
-        else:
-            exit(0)  # 避免警告导致退出
+        exit(0)
     except Exception:
         exit(0)
 except Exception:
@@ -163,7 +158,7 @@ fi
 chmod 600 /home/node/.secrets/certbot/cloudflare.ini
 
 # ----------------------------
-# 申请证书（虚拟环境 Certbot）
+# 申请证书
 # ----------------------------
 /home/node/n8n-env/bin/certbot certonly \
   --dns-cloudflare \
@@ -172,11 +167,10 @@ chmod 600 /home/node/.secrets/certbot/cloudflare.ini
   --non-interactive \
   --agree-tos \
   --email your-email@example.com
-
 deactivate
 
 # ----------------------------
-# 配置 Nginx SSL
+# Nginx 配置（启动 Nginx）
 # ----------------------------
 cat > /etc/nginx/sites-available/n8n_ssl <<EOF
 server {
@@ -201,6 +195,7 @@ server {
     }
 }
 EOF
+
 sudo ln -sf /etc/nginx/sites-available/n8n_ssl /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl restart nginx
@@ -210,5 +205,5 @@ sudo systemctl restart nginx
 # ----------------------------
 (crontab -l 2>/dev/null; echo "0 3 */2 * * /home/node/n8n-env/bin/certbot renew --quiet && systemctl reload nginx") | crontab -
 
-echo "部署完成！N8N 用户名和密码已设置，可直接登录 N8N UI。"
-echo "N8N 宿主机端口: ${N8N_PORT_HOST}"
+echo "[INFO] 部署完成！N8N 用户名和密码已设置，可直接登录 N8N UI。"
+echo "[INFO] N8N 宿主机端口: ${N8N_PORT_HOST}"
