@@ -1,11 +1,17 @@
 #!/bin/bash
 # ==========================================
-# N8N ARM 完整部署脚本（智能 Cloudflare 证书 + 自动端口处理 + 自动清理残留容器）
+# N8N ARM 完整部署脚本（稳定版）
+# 特点：
+# - 自动端口检测与清理残留容器
+# - Docker Compose 部署 N8N
+# - Nginx 反代 + SSL（Certbot 虚拟环境安装）
+# - Cloudflare DNS 证书自动申请
+# - 完全避免 pyOpenSSL / OpenSSL 冲突
 # ==========================================
 set -e
 
 # ----------------------------
-# 用户交互输入
+# 用户输入
 # ----------------------------
 read -p "请输入你的 Cloudflare API Token（推荐）: " CF_API_TOKEN
 read -p "请输入 N8N 登录用户名: " N8N_USER
@@ -13,14 +19,17 @@ read -s -p "请输入 N8N 登录密码: " N8N_PASSWORD
 echo
 
 # ----------------------------
-# 系统更新与依赖安装
+# 系统更新与依赖
 # ----------------------------
 sudo apt-get update -y
 sudo apt-get upgrade -y
-sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip lsof
+sudo apt-get install -y ca-certificates curl gnupg lsb-release sudo python3-pip python3-venv lsof build-essential libffi-dev libssl-dev
+
+# 卸载系统旧版 pyOpenSSL 避免冲突
+sudo python3 -m pip uninstall -y pyOpenSSL cryptography cffi || true
 
 # ----------------------------
-# 安装 Docker 必要组件
+# 安装 Docker
 # ----------------------------
 sudo mkdir -p /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
@@ -31,38 +40,26 @@ sudo systemctl enable docker
 sudo systemctl start docker
 
 # ----------------------------
-# 检查 N8N 宿主机端口并自动清理占用
+# 检查端口 5678 是否被占用
 # ----------------------------
-check_port() {
-    local port=$1
-    if lsof -i:${port} >/dev/null 2>&1; then
-        echo "[WARN] 端口 ${port} 被占用，尝试清理 Docker 容器和进程..."
-        # 停止并删除占用该端口的容器
-        containers=$(docker ps -a --filter "publish=${port}" --format "{{.ID}}")
-        if [ -n "$containers" ]; then
-            echo "[INFO] 停止并删除占用端口的容器: $containers"
-            docker stop $containers || true
-            docker rm $containers || true
-        fi
-        # 杀掉占用端口的进程（docker-proxy等）
-        sudo fuser -k ${port}/tcp || true
-        sleep 1
-        if lsof -i:${port} >/dev/null 2>&1; then
-            echo "[WARN] 端口 ${port} 仍被占用"
-            return 1
-        fi
-    fi
-    return 0
-}
-
 N8N_PORT_HOST=5678
-if ! check_port ${N8N_PORT_HOST}; then
-    echo "[INFO] 端口 5678 不可用，尝试使用 5679"
-    N8N_PORT_HOST=5679
-    check_port ${N8N_PORT_HOST} || { echo "[ERROR] 端口 5679 也被占用，无法安装 N8N"; exit 1; }
+if lsof -i:${N8N_PORT_HOST} >/dev/null 2>&1; then
+    echo "[WARN] 端口 ${N8N_PORT_HOST} 被占用，尝试清理 Docker 容器和进程..."
+    containers=$(docker ps -a --filter "publish=${N8N_PORT_HOST}" --format "{{.ID}}")
+    if [ -n "$containers" ]; then
+        echo "[INFO] 停止并删除占用端口的容器: $containers"
+        docker stop $containers || true
+        docker rm $containers || true
+    fi
+    sudo fuser -k ${N8N_PORT_HOST}/tcp || true
+    sleep 1
+    if lsof -i:${N8N_PORT_HOST} >/dev/null 2>&1; then
+        echo "[INFO] 端口 5678 不可用，使用 5679 端口"
+        N8N_PORT_HOST=5679
+        lsof -i:${N8N_PORT_HOST} >/dev/null 2>&1 && { echo "[ERROR] 端口 5679 也被占用，无法安装 N8N"; exit 1; }
+    fi
 fi
-
-echo "[INFO] N8N 将使用宿主机端口: ${N8N_PORT_HOST}"
+echo "[INFO] N8N 宿主机端口: ${N8N_PORT_HOST}"
 
 # ----------------------------
 # N8N 数据卷
@@ -119,13 +116,17 @@ sudo nginx -t
 sudo systemctl restart nginx
 
 # ----------------------------
-# 安装 Certbot 最新版
+# Certbot 虚拟环境
 # ----------------------------
-sudo pip3 install --upgrade certbot certbot-dns-cloudflare
+python3 -m venv /home/node/n8n-env
+source /home/node/n8n-env/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install certbot certbot-dns-cloudflare pyOpenSSL cryptography cffi
+
 mkdir -p /home/node/.secrets/certbot
 
 # ----------------------------
-# 判断 API Token 是否可用
+# 配置 Cloudflare
 # ----------------------------
 API_TOKEN_SUPPORTED=false
 python3 - <<EOF
@@ -159,19 +160,20 @@ dns_cloudflare_email = ${CF_EMAIL}
 dns_cloudflare_api_key = ${CF_GLOBAL_KEY}
 EOF
 fi
-
 chmod 600 /home/node/.secrets/certbot/cloudflare.ini
 
 # ----------------------------
-# 申请证书
+# 申请证书（虚拟环境 Certbot）
 # ----------------------------
-certbot certonly \
+/home/node/n8n-env/bin/certbot certonly \
   --dns-cloudflare \
   --dns-cloudflare-credentials /home/node/.secrets/certbot/cloudflare.ini \
   -d n8n.aihelp.work \
   --non-interactive \
   --agree-tos \
   --email your-email@example.com
+
+deactivate
 
 # ----------------------------
 # 配置 Nginx SSL
@@ -206,7 +208,7 @@ sudo systemctl restart nginx
 # ----------------------------
 # Cron 每2天检查证书
 # ----------------------------
-(crontab -l 2>/dev/null; echo "0 3 */2 * * certbot renew --quiet && systemctl reload nginx") | crontab -
+(crontab -l 2>/dev/null; echo "0 3 */2 * * /home/node/n8n-env/bin/certbot renew --quiet && systemctl reload nginx") | crontab -
 
 echo "部署完成！N8N 用户名和密码已设置，可直接登录 N8N UI。"
 echo "N8N 宿主机端口: ${N8N_PORT_HOST}"
